@@ -27,6 +27,28 @@ DJI Mic Mini and an AMS-22, it enables high-quality streaming outdoors.
 - Stereo detector: `max(abs(L), abs(R))`; the same gain is applied to both channels
 - Output limiter: zero-lookahead, -1 dBFS ceiling, 50 ms release
 
+### agccomp — Auto Gain + Compressor/Limiter
+
+A hands-off variant that automatically rides the input level toward a fixed
+target loudness of about **-14 LUFS**, then compresses and limits. The makeup
+gain of `stcomp` is removed: the AGC stage sets the optimal level instead.
+
+Signal chain: **AGC → Compressor → Limiter**
+
+**Controls**
+
+- **TIME (A):** AGC reaction time. Clockwise, 1 s to 30 s (logarithmic).
+- **DEPTH (B):** Unused.
+
+**Fixed values**
+
+- AGC target: approx. -14 LUFS (BS.1770 approximation, no K-weighting)
+- AGC gain range: -24 dB to +40 dB, frozen below -45 dBFS RMS (silence gate)
+- AGC loudness window: 400 ms (momentary)
+- Compressor: fixed -18 dBFS threshold, 4:1 ratio, 5 ms attack, 150 ms release
+- Output limiter: zero-lookahead, -1 dBFS ceiling, 50 ms release
+- Stereo detector: `max(abs(L), abs(R))`; the same gain is applied to both channels
+
 ## Build
 
 Docker, git and make are required. The `logue-sdk` and its Docker image are

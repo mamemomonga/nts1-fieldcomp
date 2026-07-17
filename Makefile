@@ -7,7 +7,7 @@
 # #############################################################################
 
 # ビルド対象のMODFXモジュール一覧
-MODFX_MODULES := stcomp
+MODFX_MODULES := stcomp agccomp
 
 # パス・イメージ設定
 SDK_DIR      := logue-sdk
