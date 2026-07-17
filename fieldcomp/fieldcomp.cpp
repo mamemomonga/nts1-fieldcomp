@@ -47,9 +47,13 @@ constexpr float kMakeupMinDb = 0.0f;           // マークアップ下限 (0 dB
 constexpr float kMakeupGateDb = -45.0f;        // 無音判定スレッショルド (RMS)
 constexpr uint32_t kMakeupControlInterval = 32U;  // マークアップ更新間隔 (サンプル)
 
-// --- リミッター ---
-constexpr float kLimiterReleaseSeconds = 0.050f;
+// --- リミッター (ルックアヘッド付き) ---
+// 先読み時間だけ信号を遅延させ、ピークが来る前にゲインを下げることで、
+// ゼロルックアヘッド瞬時アタックで生じる波形潰れ(クリップ状の歪み)を防ぐ。
+constexpr float kLimiterAttackSeconds = 0.0005f;   // アタック 0.5 ms (先読み内で下げ切る)
+constexpr float kLimiterReleaseSeconds = 0.050f;   // リリース 50 ms
 constexpr float kLimiterCeilingDb = -1.0f;
+constexpr uint32_t kLimiterLookahead = 96U;        // 先読み 2 ms @ 48 kHz (サンプル数)
 
 // 入力レベルの状態
 float g_level_gain = 1.0f;             // LEVELゲイン (線形)
@@ -72,10 +76,16 @@ float g_mk_reaction_alpha = 0.0f;  // 反応時間の1次係数 (制御レート
 float g_mk_gate_ms = 0.0f;         // 無音判定 (平均二乗値)
 uint32_t g_mk_count = 0U;
 
-// リミッターの状態
+// リミッターの状態 (ルックアヘッド付き)
 float g_limiter_gain = 1.0f;
+float g_limiter_attack_coeff = 0.0f;
 float g_limiter_release_coeff = 0.0f;
 float g_limiter_ceiling = 0.89125094f;  // -1 dBFS
+float g_limiter_peak = 0.0f;            // ピークホールド検出値
+uint32_t g_limiter_hold = 0U;           // ピークホールド残りサンプル数
+float g_la_buf_l[kLimiterLookahead];    // 先読み用の遅延バッファ (左)
+float g_la_buf_r[kLimiterLookahead];    // 先読み用の遅延バッファ (右)
+uint32_t g_la_pos = 0U;                 // 遅延バッファの読み書き位置
 
 // dB値を線形ゲインへ変換する
 inline float db_to_linear(const float db) {
@@ -134,10 +144,18 @@ void MODFX_INIT(uint32_t platform, uint32_t api) {
   g_mk_count = 0U;
   set_makeup_reaction(0.5f);  // 反応時間の初期値 (TIMEつまみで上書きされる)
 
-  // リミッター初期化
+  // リミッター初期化 (先読みバッファをクリア)
   g_limiter_gain = 1.0f;
+  g_limiter_attack_coeff = smoothing_coeff(kLimiterAttackSeconds);
   g_limiter_release_coeff = smoothing_coeff(kLimiterReleaseSeconds);
   g_limiter_ceiling = db_to_linear(kLimiterCeilingDb);
+  g_limiter_peak = 0.0f;
+  g_limiter_hold = 0U;
+  for (uint32_t k = 0U; k < kLimiterLookahead; ++k) {
+    g_la_buf_l[k] = 0.0f;
+    g_la_buf_r[k] = 0.0f;
+  }
+  g_la_pos = 0U;
 }
 
 void MODFX_PROCESS(const float *main_xn, float *main_yn,
@@ -204,23 +222,47 @@ void MODFX_PROCESS(const float *main_xn, float *main_yn,
     const float mk_left = comp_left * g_mk_gain;
     const float mk_right = comp_right * g_mk_gain;
 
-    // --- リミッター (マークアップ後の信号を検出) ---
-    const float out_peak = max_abs(mk_left, mk_right);
+    // --- リミッター (ルックアヘッド付き, マークアップ後の信号を検出) ---
+    // 未遅延のピークをホールドしながら検出し、遅延させた信号へゲインを適用する。
+    // ピークを先読み時間だけ保持することで、遅延バッファ内をピークが通過し終える
+    // まで確実にゲインを下げ続け、波形を潰さず(クリップ状の歪みを出さず)に抑える。
+    const float peak = max_abs(mk_left, mk_right);
+    if (peak >= g_limiter_peak) {
+      // 新たなピーク: 値を更新し、先読み時間だけホールドを開始
+      g_limiter_peak = peak;
+      g_limiter_hold = kLimiterLookahead;
+    } else if (g_limiter_hold > 0U) {
+      --g_limiter_hold;  // ホールド中はピーク値を維持
+    } else {
+      g_limiter_peak = peak;  // ホールド終了、現在値へ (ゲイン側のリリースで平滑化)
+    }
+
     const float limiter_target =
-        (out_peak > g_limiter_ceiling && out_peak > 1.0e-12f)
-            ? (g_limiter_ceiling / out_peak)
+        (g_limiter_peak > g_limiter_ceiling && g_limiter_peak > 1.0e-12f)
+            ? (g_limiter_ceiling / g_limiter_peak)
             : 1.0f;
 
     if (limiter_target < g_limiter_gain) {
-      g_limiter_gain = limiter_target;  // ルックアヘッド無し、アタックは即時
+      // アタック: 先読み時間内に目標まで滑らかに下げる
+      g_limiter_gain = g_limiter_attack_coeff * g_limiter_gain +
+                       (1.0f - g_limiter_attack_coeff) * limiter_target;
     } else {
-      g_limiter_gain =
-          g_limiter_release_coeff * g_limiter_gain +
-          (1.0f - g_limiter_release_coeff) * limiter_target;
+      // リリース: ゲインを緩やかに戻す
+      g_limiter_gain = g_limiter_release_coeff * g_limiter_gain +
+                       (1.0f - g_limiter_release_coeff) * limiter_target;
     }
 
-    main_yn[i] = mk_left * g_limiter_gain;
-    main_yn[i + 1U] = mk_right * g_limiter_gain;
+    // 遅延バッファから取り出し、現在のサンプルを書き込む (2 ms 遅延)
+    const float delayed_left = g_la_buf_l[g_la_pos];
+    const float delayed_right = g_la_buf_r[g_la_pos];
+    g_la_buf_l[g_la_pos] = mk_left;
+    g_la_buf_r[g_la_pos] = mk_right;
+    if (++g_la_pos >= kLimiterLookahead) {
+      g_la_pos = 0U;
+    }
+
+    main_yn[i] = delayed_left * g_limiter_gain;
+    main_yn[i + 1U] = delayed_right * g_limiter_gain;
   }
 }
 

@@ -69,7 +69,9 @@ Signal chain: **LEVEL → Compressor → Auto Makeup → Limiter**
 - Auto-makeup target: approx. -14 LUFS, gain range 0 to +20 dB (never attenuates)
 - Auto-makeup measures the compressor output; frozen below -45 dBFS RMS (silence gate)
 - Compressor: fixed -18 dBFS threshold, 4:1 ratio, 5 ms attack, 150 ms release
-- Output limiter: zero-lookahead, -1 dBFS ceiling, 50 ms release
+- Output limiter: 2 ms lookahead with peak-hold, -1 dBFS ceiling, 50 ms release
+  (the lookahead ducks transients smoothly to avoid clip-like distortion on
+  speech; it adds about 2 ms of latency)
 - Stereo detector: `max(abs(L), abs(R))`; the same gain is applied to both channels
 
 ## Build
