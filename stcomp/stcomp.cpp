@@ -3,7 +3,7 @@
 
 namespace {
 constexpr float kSampleRate = 48000.0f;
-constexpr float kRatioExponent = 0.75f;  // 4:1 compression ratio
+constexpr float kRatioExponent = 0.75f;  // 4:1 のコンプレッションレシオ
 constexpr float kAttackSeconds = 0.005f;
 constexpr float kReleaseSeconds = 0.150f;
 constexpr float kLimiterReleaseSeconds = 0.050f;
@@ -11,7 +11,7 @@ constexpr uint32_t kControlInterval = 8U;
 constexpr float kDbToLog2 = 0.16609640474436813f;  // 1 / 6.020599913...
 
 float g_threshold = 0.12589254f;  // -18 dBFS
-float g_makeup = 1.9952623f;     // +6 dB
+float g_makeup = 1.9952623f;      // +6 dB
 float g_comp_target = 1.0f;
 float g_comp_gain = 1.0f;
 float g_limiter_gain = 1.0f;
@@ -23,14 +23,17 @@ float g_release_coeff = 0.0f;
 float g_limiter_release_coeff = 0.0f;
 float g_limiter_ceiling = 0.89125094f;  // -1 dBFS
 
+// dB値を線形ゲインへ変換する
 inline float db_to_linear(const float db) {
   return fastpow2f(db * kDbToLog2);
 }
 
+// 時定数(秒)から1次ローパスの平滑化係数を求める
 inline float smoothing_coeff(const float seconds) {
   return fastexpf(-1.0f / (seconds * kSampleRate));
 }
 
+// ステレオ検出: 左右の絶対値の大きい方を返す
 inline float max_abs(const float left, const float right) {
   const float a = si_fabsf(left);
   const float b = si_fabsf(right);
@@ -43,8 +46,7 @@ void MODFX_INIT(uint32_t platform, uint32_t api) {
   (void)api;
 
   g_threshold = db_to_linear(-18.0f);
-  // g_makeup = db_to_linear(6.0f);
-  g_makeup = db_to_linear(40.0f);
+  g_makeup = db_to_linear(40.0f);  // メークアップゲイン初期値 +40 dB
   g_comp_target = 1.0f;
   g_comp_gain = 1.0f;
   g_limiter_gain = 1.0f;
@@ -99,7 +101,7 @@ void MODFX_PROCESS(const float *main_xn, float *main_yn,
             : 1.0f;
 
     if (limiter_target < g_limiter_gain) {
-      g_limiter_gain = limiter_target;  // zero-lookahead, immediate attack
+      g_limiter_gain = limiter_target;  // ルックアヘッド無し、アタックは即時
     } else {
       g_limiter_gain =
           g_limiter_release_coeff * g_limiter_gain +
@@ -116,15 +118,14 @@ void MODFX_PARAM(uint8_t index, int32_t value) {
 
   switch (index) {
     case k_user_modfx_param_time: {
-      // TIME = compression amount. Clockwise: threshold -6 -> -36 dBFS.
+      // TIME = コンプレッション度。時計回りでスレッショルド -6 -> -36 dBFS。
       const float threshold_db = -6.0f - 30.0f * normalized;
       g_threshold = db_to_linear(threshold_db);
       break;
     }
 
     case k_user_modfx_param_depth: {
-      // DEPTH = post-compressor makeup/output gain: 0 -> +18 dB.
-      // g_makeup = db_to_linear(18.0f * normalized);
+      // DEPTH = コンプレッサー後段のメークアップゲイン。0 -> +40 dB。
       g_makeup = db_to_linear(40.0f * normalized);
       break;
     }
