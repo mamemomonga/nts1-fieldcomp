@@ -9,14 +9,14 @@
 //
 // DJI Mic Miniなどラインより低いレベルの入力を、まず手動のLEVELで大まかに持ち上げ、
 // コンプレッサー後段のオートマークアップゲインが目標ラウドネス(約 -14 LUFS)へ
-// 精密に合わせる。合計で最大 +40 dB (LEVEL +20 dB + マークアップ +20 dB) の増幅が可能。
+// 精密に合わせる。合計で最大 +50 dB (LEVEL +30 dB + マークアップ +20 dB) の増幅が可能。
 //
 // マークアップのAGCは agccomp と同じくdB(対数)領域・制御レートで動作させ、
 // 平滑化係数は 1 - exp(-T/tau) ≒ T/tau の近似で生成して発散を防ぐ。
 //
 // 操作:
 //   A: TIME  = マークアップの反応時間 (1秒 -> 10秒, 対数)
-//   B: LEVEL = 入力ゲイン (0 dB -> +20 dB)
+//   B: LEVEL = 入力ゲイン (0 dB -> +30 dB)
 // #############################################################################
 
 namespace {
@@ -25,7 +25,7 @@ constexpr float kDbToLog2 = 0.16609640474436813f;  // 1 / 6.020599913...
 constexpr float kMsToDb = 3.010299957f;            // 10 / log2(10), 平均二乗->dB
 
 // --- 入力レベル (手動, B:LEVEL) ---
-constexpr float kLevelMaxDb = 20.0f;           // LEVELゲイン上限 (+20 dB, 0で下限)
+constexpr float kLevelMaxDb = 30.0f;           // LEVELゲイン上限 (+30 dB, 0で下限)
 
 // --- コンプレッサー (設定固定) ---
 constexpr float kCompThresholdDb = -18.0f;     // 固定スレッショルド
@@ -235,7 +235,7 @@ void MODFX_PARAM(uint8_t index, int32_t value) {
     }
 
     case k_user_modfx_param_depth: {
-      // LEVEL = 入力ゲイン。時計回りで 0 dB -> +20 dB。
+      // LEVEL = 入力ゲイン。時計回りで 0 dB -> +30 dB。
       g_level_gain = db_to_linear(kLevelMaxDb * normalized);
       break;
     }

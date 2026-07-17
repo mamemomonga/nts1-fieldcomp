@@ -54,7 +54,7 @@ Signal chain: **AGC → Compressor → Limiter**
 Designed for low-level sources such as the DJI Mic Mini. A manual **LEVEL**
 knob roughly raises the input, then the compressor's **auto makeup gain**
 precisely lands the output at about **-14 LUFS**. Together they provide up to
-+40 dB of gain (LEVEL +20 dB + makeup +20 dB). Unlike `agccomp`, you actively
++50 dB of gain (LEVEL +30 dB + makeup +20 dB). Unlike `agccomp`, you actively
 set how hard the compressor is driven with the LEVEL knob.
 
 Signal chain: **LEVEL → Compressor → Auto Makeup → Limiter**
@@ -62,7 +62,7 @@ Signal chain: **LEVEL → Compressor → Auto Makeup → Limiter**
 **Controls**
 
 - **TIME (A):** Auto-makeup reaction time. Clockwise, 1 s to 10 s (logarithmic).
-- **LEVEL (B):** Manual input gain, 0 dB to +20 dB.
+- **LEVEL (B):** Manual input gain, 0 dB to +30 dB.
 
 **Fixed values**
 
