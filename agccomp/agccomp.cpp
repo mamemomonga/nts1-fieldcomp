@@ -9,22 +9,30 @@
 //
 // AGCが入力レベルを目標ラウドネス(約 -14 LUFS)へ自動調整するため、
 // stcompにあったメークアップゲインは廃止している。
+//
+// AGCはdB(対数)領域で、かつ制御レートで動作させる。反応時間が1〜30秒と
+// 非常に長いため、毎サンプルの1次フィルタ係数(1に極めて近い値)を高速近似関数
+// fastexpfで作ると近似誤差で係数が1を超え、フィルタが発散する。そこで
+// 微小xでの近似 1 - exp(-x) ≒ x を用い、係数が必ず[0,1]に収まるようにする。
 // #############################################################################
 
 namespace {
 constexpr float kSampleRate = 48000.0f;
 constexpr float kDbToLog2 = 0.16609640474436813f;  // 1 / 6.020599913...
+constexpr float kMsToDb = 3.010299957f;            // 10 / log2(10), 平均二乗->dB
 
 // --- AGC (オートゲインコントローラ) ---
 constexpr float kAgcTargetLufs = -14.0f;      // 目標ラウドネス (約 -14 LUFS)
 constexpr float kLufsOffset = 0.691f;          // BS.1770のラウドネスオフセット
+// 目標RMSレベル(dBFS)。ラウドネス ≒ -0.691 + RMS(dBFS) の近似から導出。
+constexpr float kAgcTargetRmsDb = kAgcTargetLufs + kLufsOffset;
 constexpr float kAgcWindowSeconds = 0.4f;      // ラウドネス測定窓 (モーメンタリ相当)
 constexpr float kAgcReactionMin = 1.0f;        // 反応時間の最小 (秒)
 constexpr float kAgcReactionMax = 30.0f;       // 反応時間の最大 (秒)
 constexpr float kAgcMaxGainDb = 40.0f;         // AGCゲイン上限 (+40 dB)
 constexpr float kAgcMinGainDb = -24.0f;        // AGCゲイン下限 (-24 dB)
 constexpr float kAgcGateDb = -45.0f;           // 無音判定スレッショルド (RMS)
-constexpr uint32_t kAgcControlInterval = 32U;  // AGC目標ゲインの更新間隔 (サンプル)
+constexpr uint32_t kAgcControlInterval = 32U;  // AGCゲインの更新間隔 (サンプル)
 
 // --- コンプレッサー (設定固定) ---
 constexpr float kCompThresholdDb = -18.0f;     // 固定スレッショルド
@@ -37,15 +45,12 @@ constexpr uint32_t kCompControlInterval = 8U;
 constexpr float kLimiterReleaseSeconds = 0.050f;
 constexpr float kLimiterCeilingDb = -1.0f;
 
-// AGCの状態
-float g_agc_target_rms = 0.216f;   // 目標RMS振幅 (約 -14 LUFS 相当)
+// AGCの状態 (dB領域で制御)
 float g_agc_ms = 0.0f;             // 平滑化した平均二乗値 (ラウドネス推定)
-float g_agc_target_gain = 1.0f;    // 制御レートで更新する目標ゲイン
-float g_agc_gain = 1.0f;           // 実際に適用するAGCゲイン
-float g_agc_window_coeff = 0.0f;   // 測定窓の平滑化係数
-float g_agc_reaction_coeff = 0.0f; // 反応時間の平滑化係数 (TIMEで変化)
-float g_agc_max_gain = 100.0f;     // ゲイン上限 (線形)
-float g_agc_min_gain = 0.063f;     // ゲイン下限 (線形)
+float g_agc_gain_db = 0.0f;        // 適用中のAGCゲイン (dB)
+float g_agc_gain = 1.0f;           // 適用中のAGCゲイン (線形, dBから変換)
+float g_agc_window_alpha = 0.0f;   // 測定窓の1次係数 (毎サンプル)
+float g_agc_reaction_alpha = 0.0f; // 反応時間の1次係数 (制御レート, TIMEで変化)
 float g_agc_gate_ms = 0.0f;        // 無音判定 (平均二乗値)
 uint32_t g_agc_count = 0U;
 
@@ -68,14 +73,9 @@ inline float db_to_linear(const float db) {
   return fastpow2f(db * kDbToLog2);
 }
 
-// 時定数(秒)から1次ローパスの平滑化係数を求める
+// 時定数(秒)から1次ローパスの平滑化係数を求める (短い時定数向け)
 inline float smoothing_coeff(const float seconds) {
   return fastexpf(-1.0f / (seconds * kSampleRate));
-}
-
-// 平方根 (log2/pow2の恒等式で近似計算)
-inline float fast_sqrt(const float x) {
-  return fastpow2f(0.5f * fastlog2f(x));
 }
 
 // ステレオ検出: 左右の絶対値の大きい方を返す
@@ -85,11 +85,17 @@ inline float max_abs(const float left, const float right) {
   return (a > b) ? a : b;
 }
 
-// normalized(0..1)からAGC反応時間(秒)を対数的に求め、平滑化係数へ反映する
+// normalized(0..1)からAGC反応時間(秒)を対数的に求め、制御レートの1次係数へ反映する。
+// 1 - exp(-T/tau) ≒ T/tau (T<<tau) の近似を使い、係数を必ず[0,1]に収める。
 inline void set_agc_reaction(const float normalized) {
-  const float span = fastlog2f(kAgcReactionMax / kAgcReactionMin);
-  const float seconds = kAgcReactionMin * fastpow2f(span * normalized);
-  g_agc_reaction_coeff = smoothing_coeff(seconds);
+  const float span = fastlog2f(kAgcReactionMax / kAgcReactionMin);  // log2(30)
+  const float seconds = kAgcReactionMin * fastpow2f(span * normalized);  // 1..30秒
+  const float control_period = (float)kAgcControlInterval / kSampleRate;
+  float alpha = control_period / seconds;
+  if (alpha > 1.0f) {
+    alpha = 1.0f;
+  }
+  g_agc_reaction_alpha = alpha;
 }
 }  // namespace
 
@@ -98,15 +104,12 @@ void MODFX_INIT(uint32_t platform, uint32_t api) {
   (void)api;
 
   // AGC初期化。K特性は省略し、BS.1770のオフセットのみを考慮した近似ラウドネス。
-  g_agc_target_rms = db_to_linear(kAgcTargetLufs + kLufsOffset);
-  g_agc_ms = g_agc_target_rms * g_agc_target_rms;  // 目標付近から開始
-  g_agc_target_gain = 1.0f;
+  // 平均二乗値の初期値は目標レベル相当 (ms = 10^(RMSdB/10) = db_to_linear(2*RMSdB))。
+  g_agc_ms = db_to_linear(2.0f * kAgcTargetRmsDb);
+  g_agc_gain_db = 0.0f;
   g_agc_gain = 1.0f;
-  g_agc_window_coeff = smoothing_coeff(kAgcWindowSeconds);
-  g_agc_max_gain = db_to_linear(kAgcMaxGainDb);
-  g_agc_min_gain = db_to_linear(kAgcMinGainDb);
-  const float gate_rms = db_to_linear(kAgcGateDb);
-  g_agc_gate_ms = gate_rms * gate_rms;
+  g_agc_window_alpha = 1.0f / (kAgcWindowSeconds * kSampleRate);
+  g_agc_gate_ms = db_to_linear(2.0f * kAgcGateDb);
   g_agc_count = 0U;
   set_agc_reaction(0.5f);  // 反応時間の初期値 (TIMEつまみで上書きされる)
 
@@ -139,29 +142,26 @@ void MODFX_PROCESS(const float *main_xn, float *main_yn,
     // --- AGC: ラウドネス測定 ---
     // ステレオの平均二乗値を測定窓で平滑化してラウドネスを推定する
     const float ms_inst = 0.5f * (left * left + right * right);
-    g_agc_ms = g_agc_window_coeff * g_agc_ms +
-               (1.0f - g_agc_window_coeff) * ms_inst;
+    g_agc_ms += g_agc_window_alpha * (ms_inst - g_agc_ms);
 
-    // --- AGC: 目標ゲインの更新 (制御レート) ---
+    // --- AGC: ゲイン更新 (制御レート, dB領域) ---
     if (++g_agc_count >= kAgcControlInterval) {
       g_agc_count = 0U;
       if (g_agc_ms > g_agc_gate_ms) {
-        // 目標RMSに合わせるためのゲインを求め、上下限でクリップする
-        const float rms = fast_sqrt(g_agc_ms);
-        float desired = g_agc_target_rms / rms;
-        if (desired > g_agc_max_gain) {
-          desired = g_agc_max_gain;
-        } else if (desired < g_agc_min_gain) {
-          desired = g_agc_min_gain;
+        // 入力RMSレベル(dBFS)を求め、目標との差を必要ゲイン(dB)とする
+        const float level_db = kMsToDb * fastlog2f(g_agc_ms);
+        float gain_db = kAgcTargetRmsDb - level_db;
+        if (gain_db > kAgcMaxGainDb) {
+          gain_db = kAgcMaxGainDb;
+        } else if (gain_db < kAgcMinGainDb) {
+          gain_db = kAgcMinGainDb;
         }
-        g_agc_target_gain = desired;
+        // 反応時間に応じてdB領域で目標へ緩やかに追従する (発散しない安定な更新)
+        g_agc_gain_db += g_agc_reaction_alpha * (gain_db - g_agc_gain_db);
+        g_agc_gain = db_to_linear(g_agc_gain_db);
       }
-      // ゲート以下(無音)では目標ゲインを保持し、ノイズの増幅を防ぐ
+      // ゲート以下(無音)ではゲインを保持し、ノイズの増幅を防ぐ
     }
-
-    // 反応時間に応じてAGCゲインを目標へ緩やかに追従させる
-    g_agc_gain = g_agc_reaction_coeff * g_agc_gain +
-                 (1.0f - g_agc_reaction_coeff) * g_agc_target_gain;
 
     const float agc_left = left * g_agc_gain;
     const float agc_right = right * g_agc_gain;
