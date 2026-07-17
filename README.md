@@ -49,6 +49,29 @@ Signal chain: **AGC → Compressor → Limiter**
 - Output limiter: zero-lookahead, -1 dBFS ceiling, 50 ms release
 - Stereo detector: `max(abs(L), abs(R))`; the same gain is applied to both channels
 
+### fieldcomp — Level + Auto-Makeup Compressor/Limiter
+
+Designed for low-level sources such as the DJI Mic Mini. A manual **LEVEL**
+knob roughly raises the input, then the compressor's **auto makeup gain**
+precisely lands the output at about **-14 LUFS**. Together they provide up to
++40 dB of gain (LEVEL +20 dB + makeup +20 dB). Unlike `agccomp`, you actively
+set how hard the compressor is driven with the LEVEL knob.
+
+Signal chain: **LEVEL → Compressor → Auto Makeup → Limiter**
+
+**Controls**
+
+- **TIME (A):** Auto-makeup reaction time. Clockwise, 1 s to 10 s (logarithmic).
+- **LEVEL (B):** Manual input gain, 0 dB to +20 dB.
+
+**Fixed values**
+
+- Auto-makeup target: approx. -14 LUFS, gain range 0 to +20 dB (never attenuates)
+- Auto-makeup measures the compressor output; frozen below -45 dBFS RMS (silence gate)
+- Compressor: fixed -18 dBFS threshold, 4:1 ratio, 5 ms attack, 150 ms release
+- Output limiter: zero-lookahead, -1 dBFS ceiling, 50 ms release
+- Stereo detector: `max(abs(L), abs(R))`; the same gain is applied to both channels
+
 ## Build
 
 Docker, git and make are required. The `logue-sdk` and its Docker image are
